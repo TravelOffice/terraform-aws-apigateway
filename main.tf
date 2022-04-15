@@ -30,6 +30,15 @@ variable "COGNITO_USER_POOL_ARN" {
   description = "Cognito User Pool Arn"
 }
 
+variable "CORS_CONFIGURATION" {
+  description = "Cognito User Pool Arn"
+  default = {
+    allow_headers = ["Content-Type", "X-Amz-Date,Authorization", "X-Api-Key", "X-Amz-Security-Token"]
+    allow_methods = ["*"]
+    allow_origins = ["*"]
+  }
+}
+
 # Get current aws account information
 data "aws_caller_identity" "current" {}
 
@@ -55,17 +64,70 @@ resource "aws_api_gateway_rest_api" "rest_api" {
       }
     }
     paths = {
-      for pathKey, pathValue in var.API_ENDPOINTS : pathKey => {
-        for methodKey, methodValue in pathValue : lower(methodKey) => {
-          security = methodValue.authorization ? [{ lower("${var.ENV}-${var.FEATURE_NAME}-authorizers") = [] }] : []
-          x-amazon-apigateway-integration = {
-            httpMethod           = "POST"
-            payloadFormatVersion = "1.0"
-            type                 = "AWS_PROXY"
-            uri                  = "arn:aws:apigateway:${var.AWS_REGION}:lambda:path/2015-03-31/functions/${var.LAMBDA_ARNS[methodValue.lambda_name]}/invocations"
+      for pathKey, pathValue in var.API_ENDPOINTS : pathKey => merge(
+        {
+          for methodKey, methodValue in pathValue : lower(methodKey) => {
+            security = methodValue.authorization ? [{ lower("${var.ENV}-${var.FEATURE_NAME}-authorizers") = [] }] : []
+            x-amazon-apigateway-integration = {
+              httpMethod           = "POST"
+              payloadFormatVersion = "1.0"
+              type                 = "AWS_PROXY"
+              uri                  = "arn:aws:apigateway:${var.AWS_REGION}:lambda:path/2015-03-31/functions/${var.LAMBDA_ARNS[methodValue.lambda_name]}/invocations"
+            }
+          }
+        },
+        {
+          options = {
+            summary     = "CORS support",
+            description = "Enable CORS by returning correct headers\n",
+            tags = [
+              "CORS"
+            ],
+            responses = {
+              200 = {
+                description = "Default response for CORS method",
+                headers = {
+                  Access-Control-Allow-Origin = {
+                    schema = {
+                      type = "string"
+                    }
+                  },
+                  Access-Control-Allow-Methods = {
+                    schema = {
+                      type = "string"
+                    }
+                  },
+                  Access-Control-Allow-Headers = {
+                    schema = {
+                      type = "string"
+                    }
+                  }
+                },
+                content = {}
+              }
+            },
+            x-amazon-apigateway-integration = {
+              type = "mock",
+              requestTemplates = {
+                "application/json" = "{\n  \"statusCode\" : 200\n}\n"
+              },
+              responses = {
+                default = {
+                  statusCode = "200",
+                  responseParameters = {
+                    "method.response.header.Access-Control-Allow-Headers" = format("'%s'", join(",", var.CORS_CONFIGURATION.allow_headers)),
+                    "method.response.header.Access-Control-Allow-Methods" = format("'%s'", join(",", var.CORS_CONFIGURATION.allow_methods)),
+                    "method.response.header.Access-Control-Allow-Origin"  = format("'%s'", join(",", var.CORS_CONFIGURATION.allow_origins)),
+                  },
+                  responseTemplates = {
+                    "application/json" = "{}\n"
+                  }
+                }
+              }
+            }
           }
         }
-      }
+      )
     }
   })
 
