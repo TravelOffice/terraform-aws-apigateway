@@ -15,12 +15,15 @@ variable "FEATURE_NAME" {
 }
 variable "DOMAIN_NAME" {
   description = "Domain name"
+  default     = ""
 }
 variable "HOSTED_ZONE_ID" {
   description = "Route53 hosted zone id"
+  default     = ""
 }
 variable "DOMAIN_CERTIFICATE_ARN" {
   description = "Domain certificate arn"
+  default     = ""
 }
 variable "TAGS" {
   description = "List tags"
@@ -37,6 +40,10 @@ variable "CORS_CONFIGURATION" {
     allow_methods = ["*"]
     allow_origins = ["*"]
   }
+}
+
+locals {
+  domain_number = var.DOMAIN_NAME == "" ? 0 : 1
 }
 
 # Get current aws account information
@@ -158,8 +165,8 @@ locals {
       for key, value in var.API_ENDPOINTS[path] : {
         path           = path
         statement_path = replace(path, "/[^a-zA-Z0-9 -]/", "_")
-        method      = key
-        lambda_name = value.lambda_name
+        method         = key
+        lambda_name    = value.lambda_name
       }
     ]
   ])
@@ -184,6 +191,7 @@ resource "aws_api_gateway_stage" "api_gateway_stage" {
 }
 
 resource "aws_api_gateway_domain_name" "domain_name" {
+  count                    = local.domain_number
   domain_name              = lower("${var.ENV}-${var.FEATURE_NAME}.${var.DOMAIN_NAME}")
   regional_certificate_arn = var.DOMAIN_CERTIFICATE_ARN
 
@@ -196,19 +204,36 @@ resource "aws_api_gateway_domain_name" "domain_name" {
 # DNS record using Route53.
 # Route53 is not specifically required; any DNS host can be used.
 resource "aws_route53_record" "route53_record" {
-  name    = aws_api_gateway_domain_name.domain_name.domain_name
+  count = local.domain_number
+  depends_on = [
+    aws_api_gateway_domain_name.domain_name
+  ]
+  name    = aws_api_gateway_domain_name.domain_name[0].domain_name
   type    = "A"
   zone_id = var.HOSTED_ZONE_ID
 
   alias {
     evaluate_target_health = true
-    name                   = aws_api_gateway_domain_name.domain_name.regional_domain_name
-    zone_id                = aws_api_gateway_domain_name.domain_name.regional_zone_id
+    name                   = aws_api_gateway_domain_name.domain_name[0].regional_domain_name
+    zone_id                = aws_api_gateway_domain_name.domain_name[0].regional_zone_id
   }
 }
 
 resource "aws_api_gateway_base_path_mapping" "path_mapping" {
+  count = local.domain_number
+  depends_on = [
+    aws_api_gateway_domain_name.domain_name
+  ]
   api_id      = aws_api_gateway_rest_api.rest_api.id
   stage_name  = aws_api_gateway_stage.api_gateway_stage.stage_name
-  domain_name = aws_api_gateway_domain_name.domain_name.domain_name
+  domain_name = aws_api_gateway_domain_name.domain_name[0].domain_name
+}
+
+
+output "raw_url" {
+  value = aws_api_gateway_deployment.deployment.invoke_url
+}
+
+output "domain_url" {
+  value = aws_api_gateway_domain_name.domain_name[*].domain_name
 }
