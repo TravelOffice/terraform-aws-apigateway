@@ -174,7 +174,6 @@ locals {
 
 resource "aws_lambda_permission" "api_gatewway_invoke_lambda_permission" {
   for_each      = { for api in local.mapping_method_lambda_name : lower("${api.path}_${api.method}") => api }
-  statement_id  = "${var.ENV}-${var.FEATURE_NAME}-${each.value.statement_path}-${each.value.method}"
   action        = "lambda:InvokeFunction"
   function_name = "${var.ENV}-${var.FEATURE_NAME}-${each.value.lambda_name}"
   principal     = "apigateway.amazonaws.com"
