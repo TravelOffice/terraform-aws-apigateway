@@ -41,7 +41,6 @@ variable "CORS_CONFIGURATION" {
     allow_origins = ["*"]
   }
 }
-
 locals {
   domain_number = var.DOMAIN_NAME == "" ? 0 : 1
 }
@@ -159,14 +158,20 @@ resource "aws_api_gateway_deployment" "deployment" {
   }
 }
 
+data "aws_arn" "lambda_function" {
+  for_each = var.LAMBDA_ARNS
+  arn      = each.value
+}
+
 locals {
+  lambda_arns_indicator = "function:"
   mapping_method_lambda_name = flatten([
     for path in keys(var.API_ENDPOINTS) : [
       for key, value in var.API_ENDPOINTS[path] : {
         path           = path
         statement_path = replace(path, "/[^a-zA-Z0-9 -]/", "_")
         method         = key
-        lambda_name    = value.lambda_name
+        lambda_name    = substr(data.aws_arn.lambda_function[value.lambda_name].resource, length(local.lambda_arns_indicator), -1)
       }
     ]
   ])
@@ -175,7 +180,7 @@ locals {
 resource "aws_lambda_permission" "api_gatewway_invoke_lambda_permission" {
   for_each      = { for api in local.mapping_method_lambda_name : lower("${api.path}_${api.method}") => api }
   action        = "lambda:InvokeFunction"
-  function_name = "${var.ENV}-${var.FEATURE_NAME}-${each.value.lambda_name}"
+  function_name = each.value.lambda_name
   principal     = "apigateway.amazonaws.com"
 
   # More: http://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-control-access-using-iam-policies-to-invoke-api.html
