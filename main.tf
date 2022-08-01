@@ -41,8 +41,10 @@ variable "CORS_CONFIGURATION" {
     allow_origins = ["*"]
   }
 }
-locals {
-  domain_number = var.DOMAIN_NAME == "" ? 0 : 1
+
+variable "LAMBDA_AUTHORIZERS" {
+  description = "Lambda Authoziration configuration"
+  default     = {}
 }
 
 # Get current aws account information
@@ -56,24 +58,51 @@ resource "aws_api_gateway_rest_api" "rest_api" {
       version = "1.0"
     }
     components = {
-      securitySchemes = {
-        lower("${var.ENV}-${var.FEATURE_NAME}-authorizers") = {
-          type                           = "apiKey"
-          name                           = "Authorization"
-          in                             = "header"
-          "x-amazon-apigateway-authtype" = "cognito_user_pools"
-          "x-amazon-apigateway-authorizer" = {
-            type         = "cognito_user_pools"
-            providerARNs = [var.COGNITO_USER_POOL_ARN]
+      securitySchemes = merge(
+        {
+          for authName, authValue in var.LAMBDA_AUTHORIZERS : lower("${var.ENV}-${var.FEATURE_NAME}-${authName}") => {
+            type                         = "apiKey"
+            name                         = "Authorization"
+            in                           = "header"
+            x-amazon-apigateway-authtype = "oauth2"
+            x-amazon-apigateway-authorizer = {
+              type                         = "token"
+              authorizerCredentials        = "",
+              identityValidationExpression = "",
+              authorizerResultTtlInSeconds = can(authValue.caching_config) ? authValue.caching_config.ttl : 0,
+              authorizerUri                = "arn:aws:apigateway:${var.AWS_REGION}:lambda:path/2015-03-31/functions/${var.LAMBDA_ARNS[authValue.lambda_name]}/invocations"
+            }
+          }
+        },
+        {
+          lower("${var.ENV}-${var.FEATURE_NAME}-cognito_authorizer") = {
+            type                           = "apiKey"
+            name                           = "Authorization"
+            in                             = "header"
+            "x-amazon-apigateway-authtype" = "cognito_user_pools"
+            "x-amazon-apigateway-authorizer" = {
+              type         = "cognito_user_pools"
+              providerARNs = [var.COGNITO_USER_POOL_ARN]
+            }
           }
         }
-      }
+      )
     }
     paths = {
       for pathKey, pathValue in var.API_ENDPOINTS : pathKey => merge(
         {
           for methodKey, methodValue in pathValue : lower(methodKey) => {
-            security = methodValue.authorization ? [{ lower("${var.ENV}-${var.FEATURE_NAME}-authorizers") = [] }] : []
+            security = (
+              can(methodValue.authorization)
+              ? (methodValue.authorization.type == "COGNITO"
+                ? [{ lower("${var.ENV}-${var.FEATURE_NAME}-cognito_authorizer") = [] }]
+                : (methodValue.authorization.type == "LAMBDA"
+                  ? [{ lower("${var.ENV}-${var.FEATURE_NAME}-${methodValue.authorization.lambda_authorizer_name}") = [] }]
+                  : []
+                )
+              )
+              : []
+            )
             x-amazon-apigateway-integration = {
               httpMethod           = "POST"
               payloadFormatVersion = "1.0"
@@ -164,6 +193,7 @@ data "aws_arn" "lambda_function" {
 }
 
 locals {
+  domain_number         = var.DOMAIN_NAME == "" ? 0 : 1
   lambda_arns_indicator = "function:"
   mapping_method_lambda_name = flatten([
     for path in keys(var.API_ENDPOINTS) : [
@@ -185,6 +215,16 @@ resource "aws_lambda_permission" "api_gatewway_invoke_lambda_permission" {
 
   # More: http://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-control-access-using-iam-policies-to-invoke-api.html
   source_arn = "arn:aws:execute-api:${var.AWS_REGION}:${data.aws_caller_identity.current.account_id}:${aws_api_gateway_rest_api.rest_api.id}/*/${each.value.method}${each.value.path}"
+}
+
+resource "aws_lambda_permission" "api_gatewway_invoke_lambda_authorizer" {
+  for_each      = var.LAMBDA_AUTHORIZERS
+  action        = "lambda:InvokeFunction"
+  function_name = substr(data.aws_arn.lambda_function[each.value.lambda_name].resource, length(local.lambda_arns_indicator), -1)
+  principal     = "apigateway.amazonaws.com"
+
+  # More: http://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-control-access-using-iam-policies-to-invoke-api.html
+  source_arn = "arn:aws:execute-api:${var.AWS_REGION}:${data.aws_caller_identity.current.account_id}:${aws_api_gateway_rest_api.rest_api.id}/authorizers/*"
 }
 
 resource "aws_api_gateway_stage" "api_gateway_stage" {
