@@ -47,6 +47,11 @@ variable "LAMBDA_AUTHORIZERS" {
   default     = {}
 }
 
+variable "API_GATEWAY_RESPONSES" {
+  description = "Define custom ApiGateway response"
+  default     = {}
+}
+
 # Get current aws account information
 data "aws_caller_identity" "current" {}
 
@@ -66,7 +71,7 @@ resource "aws_api_gateway_rest_api" "rest_api" {
             in                           = "header"
             x-amazon-apigateway-authtype = "oauth2"
             x-amazon-apigateway-authorizer = {
-              type                         = "token"
+              type                         = try(authValue.type, "token")
               authorizerCredentials        = "",
               identityValidationExpression = "",
               authorizerResultTtlInSeconds = can(authValue.caching_config) ? authValue.caching_config.ttl : 0,
@@ -227,11 +232,22 @@ resource "aws_lambda_permission" "api_gatewway_invoke_lambda_authorizer" {
   source_arn = "arn:aws:execute-api:${var.AWS_REGION}:${data.aws_caller_identity.current.account_id}:${aws_api_gateway_rest_api.rest_api.id}/authorizers/*"
 }
 
+resource "aws_api_gateway_gateway_response" "gateway_response" {
+  for_each           = var.API_GATEWAY_RESPONSES
+  rest_api_id        = aws_api_gateway_rest_api.rest_api.id
+  status_code        = each.value.status_code
+  response_type      = each.value.response_type
+  response_templates = each.value.response_templates
+}
+
 resource "aws_api_gateway_stage" "api_gateway_stage" {
   deployment_id = aws_api_gateway_deployment.deployment.id
   rest_api_id   = aws_api_gateway_rest_api.rest_api.id
   stage_name    = var.ENV
   tags          = var.TAGS
+  depends_on = [
+    aws_api_gateway_gateway_response.gateway_response
+  ]
 }
 
 resource "aws_api_gateway_domain_name" "domain_name" {
@@ -272,7 +288,6 @@ resource "aws_api_gateway_base_path_mapping" "path_mapping" {
   stage_name  = aws_api_gateway_stage.api_gateway_stage.stage_name
   domain_name = aws_api_gateway_domain_name.domain_name[0].domain_name
 }
-
 
 output "raw_url" {
   value = aws_api_gateway_deployment.deployment.invoke_url
